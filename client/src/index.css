@@ -11,11 +11,37 @@ body {
 
 /* Constrain the video area so it doesn't fill the entire viewport */
 .lk-video-conference {
-  max-width: 960px;
+  max-width: 1200px;
   max-height: 80vh;
   margin: 0 auto;
   border-radius: 12px;
   overflow: hidden;
+}
+
+/* Force 2x2 grid with centered placement for 1-4 participants */
+.lk-grid-layout {
+  --lk-col-count: 2 !important;
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: center !important;
+  align-items: center !important;
+  align-content: center !important;
+  gap: 8px !important;
+  height: 100%;
+}
+
+.lk-grid-layout .lk-participant-tile {
+  aspect-ratio: 16 / 9;
+  min-height: 240px;
+  max-height: 50vh;
+  width: calc(50% - 4px);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+/* 1 participant: center single tile */
+.lk-grid-layout .lk-participant-tile:only-child {
+  width: calc(50% - 4px);
 }
 
 /* Solid, clearly visible control bar buttons */
@@ -58,4 +84,26 @@ body {
   border-radius: 6px !important;
   font-size: 13px !important;
   font-weight: 600 !important;
+}
+
+/* Placeholder shown when camera is off or loading */
+.lk-participant-placeholder {
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.lk-participant-placeholder::after {
+  content: '';
+  display: block;
+  width: 80px;
+  height: 80px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%236b7280'%3E%3Cpath d='M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z'/%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
 }
