@@ -11,7 +11,7 @@ dotenv.config({ path: path.join(__dirname, "../../.env") });
 const app = express();
 const PORT = 3001;
 
-app.use(cors({ origin: "http://localhost:5173" }));
+app.use(cors({ origin: true }));
 app.use(express.json());
 
 // Initialize EgressClient for YouTube streaming
@@ -48,6 +48,36 @@ app.post("/api/token", async (req, res) => {
     roomJoin: true,
     canPublish: true,
     canSubscribe: true,
+  });
+
+  res.json({ token: await token.toJwt() });
+});
+
+app.post("/api/token/ai-cohost", async (req, res) => {
+  const { room } = req.body;
+
+  if (!room) {
+    return res.status(400).json({ error: "room is required" });
+  }
+
+  const apiKey = process.env.LIVEKIT_API_KEY;
+  const apiSecret = process.env.LIVEKIT_API_SECRET;
+
+  if (!apiKey || !apiSecret) {
+    return res.status(500).json({ error: "LiveKit credentials not configured" });
+  }
+
+  const token = new AccessToken(apiKey, apiSecret, {
+    identity: "ai-cohost",
+    name: "AI Co-Host",
+  });
+
+  token.addGrant({
+    room,
+    roomJoin: true,
+    canPublish: true,
+    canSubscribe: false,
+    canPublishData: false,
   });
 
   res.json({ token: await token.toJwt() });

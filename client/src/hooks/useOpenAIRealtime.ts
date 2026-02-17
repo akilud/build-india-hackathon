@@ -40,7 +40,7 @@ export function useOpenAIRealtime({
         console.log("[OpenAI] Starting connection setup...");
 
         // 1. Get ephemeral key from our server
-        const response = await fetch("http://localhost:3001/api/openai/session", {
+        const response = await fetch("/api/openai/session", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
         });
@@ -90,6 +90,12 @@ export function useOpenAIRealtime({
               instructions: "You are an enthusiastic podcast host. You will respond in a fun manner. Ask engaging questions, show genuine interest, and help make the conversation flow naturally. Keep responses concise (2-3 sentences). You can also help me introduce people and companies.",
               voice: "alloy",
               input_audio_transcription: { model: "whisper-1" },
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.8,
+                prefix_padding_ms: 500,
+                silence_duration_ms: 1000,
+              },
             }
           }));
         };

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { LiveKitRoom, VideoConference } from "@livekit/components-react";
+import { LiveKitRoom, RoomAudioRenderer, VideoConference } from "@livekit/components-react";
 import "@livekit/components-styles";
 import AICoHostManager from './AICoHostManager';
 
@@ -30,7 +30,7 @@ export default function RoomPage({ role }: RoomPageProps) {
     setError(null);
 
     try {
-      const response = await fetch("http://localhost:3001/api/token", {
+      const response = await fetch("/api/token", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -108,6 +108,7 @@ export default function RoomPage({ role }: RoomPageProps) {
             onDisconnected={handleDisconnect}
           >
             <VideoConference />
+            <RoomAudioRenderer />
           </LiveKitRoom>
         </div>
       </div>

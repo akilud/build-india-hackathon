@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LiveKitRoom, useRoomContext, useTracks } from "@livekit/components-react";
-import { Track } from "livekit-client";
+import { Room, RoomEvent, Track } from "livekit-client";
 import { useOpenAIRealtime } from "../hooks/useOpenAIRealtime";
 
 interface AICoHostManagerProps {
@@ -21,10 +21,19 @@ function AICoHostControls({
   onError: (error: Error) => void;
 }) {
   const room = useRoomContext();
+  const aiRoomRef = useRef<Room | null>(null);
   const [aiEnabled, setAiEnabled] = useState(false);
   const [localMicTrack, setLocalMicTrack] = useState<MediaStreamTrack | null>(null);
   const [aiAudioTrack, setAiAudioTrack] = useState<MediaStreamTrack | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Store callbacks in refs to avoid triggering effects on every render
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+  const onMicTrackReadyRef = useRef(onMicTrackReady);
+  onMicTrackReadyRef.current = onMicTrackReady;
+  const onAiAudioTrackRef = useRef(onAiAudioTrack);
+  onAiAudioTrackRef.current = onAiAudioTrack;
 
   // Streaming state
   const [isStreaming, setIsStreaming] = useState(false);
@@ -38,56 +47,143 @@ function AICoHostControls({
   });
 
   // Extract local mic track when available
+  const localMicRef = useRef<string | null>(null);
   useEffect(() => {
-    console.log("[AICoHost] Tracks updated, count:", tracks.length);
-    const micTrack = tracks.find(t => t.source === Track.Source.Microphone);
-    console.log("[AICoHost] Mic track found:", !!micTrack);
+    const micTrack = tracks.find(
+      t => t.source === Track.Source.Microphone && t.participant.identity === room.localParticipant.identity
+    );
     if (micTrack?.publication?.track) {
       const mediaStreamTrack = micTrack.publication.track.mediaStreamTrack;
-      console.log("[AICoHost] Extracted MediaStreamTrack:", mediaStreamTrack.id, "enabled:", mediaStreamTrack.enabled);
+      // Only update if the track actually changed
+      if (localMicRef.current === mediaStreamTrack.id) return;
+      localMicRef.current = mediaStreamTrack.id;
+      console.log("[AICoHost] Local mic track set:", mediaStreamTrack.id);
       setLocalMicTrack(mediaStreamTrack);
-      onMicTrackReady(mediaStreamTrack);
+      onMicTrackReadyRef.current(mediaStreamTrack);
     }
-  }, [tracks, onMicTrackReady]);
+  }, [tracks, room.localParticipant.identity]);
 
-  // Publish AI audio track to LiveKit when ready
+  // Host should ignore the AI Co-Host's tracks (we already hear AI locally)
   useEffect(() => {
-    if (!aiAudioTrack || !room) {
-      console.log("[AICoHost] Not publishing AI track - aiAudioTrack:", !!aiAudioTrack, "room:", !!room);
-      return;
+    if (!room) return;
+
+    function unsubscribeAiTracks(participant: import("livekit-client").RemoteParticipant) {
+      if (participant.identity !== "ai-cohost") return;
+      participant.trackPublications.forEach((pub) => {
+        if (pub.isSubscribed) {
+          pub.setSubscribed(false);
+        }
+      });
     }
 
-    console.log("[AICoHost] Publishing AI audio track to LiveKit...");
-    async function publishAITrack() {
-      try {
-        const stream = new MediaStream([aiAudioTrack]);
-        await room.localParticipant.publishTrack(aiAudioTrack, {
-          name: 'ai-cohost',
-          source: Track.Source.Unknown,
-          stream,
-        });
-        console.log("[AICoHost] AI audio track published successfully");
-      } catch (err) {
-        console.error("[AICoHost] Failed to publish AI track:", err);
-        setError("Failed to publish AI audio track");
-        onError(err as Error);
+    function onTrackSubscribed(
+      _track: import("livekit-client").RemoteTrack,
+      pub: import("livekit-client").RemoteTrackPublication,
+      participant: import("livekit-client").RemoteParticipant,
+    ) {
+      if (participant.identity === "ai-cohost") {
+        pub.setSubscribed(false);
       }
     }
 
-    publishAITrack();
-  }, [aiAudioTrack, room, onError]);
+    // Unsubscribe from any already-connected AI participant
+    room.remoteParticipants.forEach(unsubscribeAiTracks);
+
+    // Handle future connections / subscriptions
+    room.on(RoomEvent.ParticipantConnected, unsubscribeAiTracks);
+    room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+
+    return () => {
+      room.off(RoomEvent.ParticipantConnected, unsubscribeAiTracks);
+      room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+    };
+  }, [room]);
+
+  // Clear AI audio track when AI is disabled
+  useEffect(() => {
+    if (!aiEnabled) {
+      setAiAudioTrack(null);
+    }
+  }, [aiEnabled]);
+
+  // Connect a separate "AI Co-Host" participant and publish AI audio through it
+  useEffect(() => {
+    if (!aiAudioTrack) {
+      // Disconnect existing AI room if track was cleared
+      if (aiRoomRef.current) {
+        console.log("[AICoHost] AI audio track cleared, disconnecting AI Co-Host");
+        aiRoomRef.current.disconnect();
+        aiRoomRef.current = null;
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const aiRoom = new Room();
+    aiRoomRef.current = aiRoom;
+
+    async function connectAndPublish() {
+      try {
+        console.log("[AICoHost] Fetching AI Co-Host token...");
+        const res = await fetch("/api/token/ai-cohost", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ room: "main-room" }),
+        });
+        if (!res.ok) throw new Error("Failed to get AI co-host token");
+        const { token } = await res.json();
+
+        if (cancelled) return;
+
+        const livekitUrl = import.meta.env.VITE_LIVEKIT_URL;
+        console.log("[AICoHost] Connecting AI Co-Host participant...");
+        await aiRoom.connect(livekitUrl, token, {
+          autoSubscribe: false,
+        });
+
+        if (cancelled) {
+          aiRoom.disconnect();
+          return;
+        }
+
+        console.log("[AICoHost] Publishing AI audio track as AI Co-Host...");
+        await aiRoom.localParticipant.publishTrack(aiAudioTrack, {
+          name: "ai-cohost-audio",
+          source: Track.Source.Microphone,
+        });
+        console.log("[AICoHost] AI audio track published via separate participant");
+      } catch (err) {
+        console.error("[AICoHost] Failed to connect/publish AI participant:", err);
+        setError("Failed to publish AI audio as separate participant");
+        onErrorRef.current(err as Error);
+      }
+    }
+
+    connectAndPublish();
+
+    return () => {
+      cancelled = true;
+      console.log("[AICoHost] Disconnecting AI Co-Host participant");
+      aiRoom.disconnect();
+      aiRoomRef.current = null;
+    };
+  }, [aiAudioTrack]);
+
+  const handleAiTrackReady = useCallback((track: MediaStreamTrack) => {
+    setAiAudioTrack(track);
+    onAiAudioTrackRef.current(track);
+  }, []);
+
+  const handleAiError = useCallback((err: Error) => {
+    setError(err.message);
+    onErrorRef.current(err);
+  }, []);
 
   const { isConnected, isSpeaking } = useOpenAIRealtime({
     enabled: aiEnabled,
     localAudioTrack: localMicTrack,
-    onAudioTrackReady: (track) => {
-      setAiAudioTrack(track);
-      onAiAudioTrack(track);
-    },
-    onError: (err) => {
-      setError(err.message);
-      onError(err);
-    },
+    onAudioTrackReady: handleAiTrackReady,
+    onError: handleAiError,
   });
 
   // Start YouTube streaming handler
@@ -101,7 +197,7 @@ function AICoHostControls({
     setStreamingError(null);
 
     try {
-      const response = await fetch("http://localhost:3001/api/streaming/start", {
+      const response = await fetch("/api/streaming/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ room: "main-room" }),
@@ -135,7 +231,7 @@ function AICoHostControls({
     setStreamingError(null);
 
     try {
-      const response = await fetch("http://localhost:3001/api/streaming/stop", {
+      const response = await fetch("/api/streaming/stop", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ egressId }),
@@ -162,7 +258,7 @@ function AICoHostControls({
     return () => {
       if (isStreaming && egressId) {
         console.log("[Streaming] Cleanup: stopping streaming on unmount");
-        fetch("http://localhost:3001/api/streaming/stop", {
+        fetch("/api/streaming/stop", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ egressId }),
@@ -260,6 +356,7 @@ export default function AICoHostManager({
 }: AICoHostManagerProps) {
   const [micTrack, setMicTrack] = useState<MediaStreamTrack | null>(null);
   const [aiTrack, setAiTrack] = useState<MediaStreamTrack | null>(null);
+  const handleError = useCallback((err: Error) => console.error("AI Error:", err), []);
 
   return (
     <div className="relative w-full">
@@ -274,7 +371,7 @@ export default function AICoHostManager({
         <AICoHostControls
           onMicTrackReady={setMicTrack}
           onAiAudioTrack={setAiTrack}
-          onError={(err) => console.error("AI Error:", err)}
+          onError={handleError}
         />
         {children}
       </LiveKitRoom>

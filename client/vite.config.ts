@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [react()],
   envDir: '../',  // Point to parent directory for .env files
   server: {
+    allowedHosts: true,
     proxy: {
       '/api': 'http://localhost:3001',
     },
